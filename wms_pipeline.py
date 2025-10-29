@@ -51,45 +51,48 @@ class Pipeline:
 
     # --- 4. WMS 데이터 로딩 (클래스 변수) ---
     @staticmethod
-    def _load_shipment_data():
-        """shipment.csv에서 전체 데이터 로드"""
+    def _load_wms_data():
+        """input 폴더의 모든 CSV 파일 로드"""
+        input_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "input")
+
+        data = {
+            "inbound": None,
+            "inventory": None,
+            "outbound": None
+        }
+
         try:
-            # CSV 파일 경로 설정
-            csv_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                "input",
-                "shipment.csv"
-            )
+            # 1. Inbound 데이터 로드
+            inbound_path = os.path.join(input_dir, "inbound.csv")
+            if os.path.exists(inbound_path):
+                df_inbound = pd.read_csv(inbound_path, encoding='utf-8-sig')
+                df_inbound['date'] = pd.to_datetime(df_inbound['date'])
+                data["inbound"] = df_inbound
+                print(f"[Pipeline] inbound.csv 로드 완료: {len(df_inbound)}건")
 
-            # CSV 로드
-            df = pd.read_csv(csv_path)
-            df['OUTB_DATE'] = pd.to_datetime(df['OUTB_DATE'])
+            # 2. Inventory 데이터 로드
+            inventory_path = os.path.join(input_dir, "inventory.csv")
+            if os.path.exists(inventory_path):
+                df_inventory = pd.read_csv(inventory_path, encoding='utf-8-sig')
+                data["inventory"] = df_inventory
+                print(f"[Pipeline] inventory.csv 로드 완료: {len(df_inventory)}건")
 
-            # 데이터 변환: CSV 형식을 기존 구조와 유사하게 변환
-            all_data = []
-            for _, row in df.iterrows():
-                all_data.append({
-                    "order_id": str(row['ORDER_NO']),
-                    "date": row['OUTB_DATE'].strftime("%Y-%m-%d"),
-                    "datetime": row['OUTB_DATE'].strftime("%Y-%m-%d %H:%M:%S"),
-                    "quantity": int(row['JOB_QTY']),
-                    "item_code": str(row['ITEM_CD']),
-                    "shipto_id": str(row['SHIPTO_ID']),
-                    "outbound_type": str(row['OUTB_TCD']),
-                    "storage_status": str(row['STRG_STAT']),
-                    "status": "completed"  # 기본값
-                })
+            # 3. Outbound 데이터 로드
+            outbound_path = os.path.join(input_dir, "outbound.csv")
+            if os.path.exists(outbound_path):
+                df_outbound = pd.read_csv(outbound_path, encoding='utf-8-sig')
+                df_outbound['date'] = pd.to_datetime(df_outbound['date'])
+                data["outbound"] = df_outbound
+                print(f"[Pipeline] outbound.csv 로드 완료: {len(df_outbound)}건")
 
-            print(f"[Pipeline] shipment.csv 로드 완료: {len(all_data)}건")
-            return all_data
+            return data
 
         except Exception as e:
-            print(f"[Pipeline] shipment.csv 로드 실패: {e}")
-            # 실패 시 빈 리스트 반환
-            return []
+            print(f"[Pipeline] CSV 파일 로드 실패: {e}")
+            return data
 
     # 전체 데이터를 클래스 변수로 저장
-    wms_data = _load_shipment_data()
+    wms_data = _load_wms_data()
 
 
     def pipes(self) -> List[dict]:
@@ -131,83 +134,130 @@ class Pipeline:
 
     def _fetch_wms_data(self, message: str) -> str:
         """
-        사용자 메시지에서 날짜 또는 날짜 범위를 추출하고 해당 출고 데이터를 반환
+        사용자 메시지에서 날짜 또는 날짜 범위를 추출하고 해당 데이터를 반환
+        데이터가 많을 경우 요약해서 반환
         """
         date_info = self._extract_date(message)
         print(f"[Pipeline] 추출된 날짜 정보: {date_info}")
 
-        # 날짜 필터링
-        if isinstance(date_info, dict) and date_info.get("type") == "range":
-            # 날짜 범위 필터링
-            start_date = date_info["start"]
-            end_date = date_info["end"]
-            filtered_data = [
-                order for order in self.wms_data
-                if start_date <= order["date"] <= end_date
-            ]
-            query_description = date_info["description"]
-            target_date = f"{start_date} ~ {end_date}"
-        elif date_info == "week":
-            # 일주일 데이터 (전체 데이터 반환)
-            filtered_data = self.wms_data[-5000:]  # 최근 5000건으로 제한
-            query_description = "최근 일주일"
-            target_date = "week"
-        else:
-            # 단일 날짜 필터링
-            target_date = self._parse_date_string(date_info)
-            filtered_data = [order for order in self.wms_data if order["date"] == target_date]
-            query_description = target_date
-
-        print(f"[Pipeline] 필터링된 데이터 건수: {len(filtered_data)}")
-
-        # 통계 계산
-        total_quantity = sum(order["quantity"] for order in filtered_data)
-        unique_orders = len(set(order["order_id"] for order in filtered_data))
-        unique_items = len(set(order["item_code"] for order in filtered_data))
-        unique_customers = len(set(order["shipto_id"] for order in filtered_data))
-
-        # 상품별 출고 수량 집계 (상위 10개)
-        item_quantities = {}
-        for order in filtered_data:
-            item_code = order["item_code"]
-            item_quantities[item_code] = item_quantities.get(item_code, 0) + order["quantity"]
-
-        top_items = sorted(item_quantities.items(), key=lambda x: x[1], reverse=True)[:10]
-
-        # 이상 탐지
-        anomalies = self._detect_anomalies(filtered_data)
-
-        # 결과 구성
         result = {
-            "query_description": query_description,
+            "query_description": "",
             "query_date": date_info if isinstance(date_info, str) else date_info.get("description"),
-            "target_date": target_date,
-            "summary": {
-                "total_records": len(filtered_data),
-                "unique_orders": unique_orders,
-                "total_quantity": total_quantity,
-                "unique_items": unique_items,
-                "unique_customers": unique_customers
-            },
-            "top_items": [
-                {"item_code": item, "total_quantity": qty}
-                for item, qty in top_items
-            ],
-            "anomaly_count": len(anomalies),
-            "anomalies": anomalies[:5] if anomalies else [],  # 최대 5건만 표시
-            "sample_data": filtered_data[:10]  # 샘플 데이터 10건
+            "target_date": "",
+            "inbound": {},
+            "inventory": {},
+            "outbound": {},
+            "data_summary_note": ""
         }
+
+        # 날짜 파싱
+        if isinstance(date_info, dict) and date_info.get("type") == "range":
+            start_date = pd.to_datetime(date_info["start"])
+            end_date = pd.to_datetime(date_info["end"])
+            result["query_description"] = date_info["description"]
+            result["target_date"] = f"{date_info['start']} ~ {date_info['end']}"
+        else:
+            target_date = self._parse_date_string(date_info)
+            start_date = end_date = pd.to_datetime(target_date) if target_date != "week" else None
+            result["query_description"] = target_date
+            result["target_date"] = target_date
+
+        # --- Inbound 데이터 처리 ---
+        if self.wms_data["inbound"] is not None:
+            df_in = self.wms_data["inbound"]
+            if start_date is not None:
+                df_in_filtered = df_in[(df_in['date'] >= start_date) & (df_in['date'] <= end_date)]
+            else:
+                df_in_filtered = df_in.tail(5000)  # 최근 5000건
+
+            # 데이터가 많을 경우 샘플 제한
+            sample_limit = 3 if len(df_in_filtered) > 10000 else 5
+
+            # 샘플 데이터 준비 (날짜를 문자열로 변환)
+            sample_data = []
+            if not df_in_filtered.empty:
+                df_sample = df_in_filtered.head(sample_limit).copy()
+                df_sample['date'] = df_sample['date'].dt.strftime('%Y-%m-%d')
+                sample_data = df_sample.to_dict('records')
+
+            # Top SKU도 제한 (데이터 많을 경우 5개로 축소)
+            top_limit = 5 if len(df_in_filtered) > 10000 else 10
+
+            result["inbound"] = {
+                "total_records": len(df_in_filtered),
+                "total_quantity": int(df_in_filtered['in_qty'].sum()) if not df_in_filtered.empty else 0,
+                "unique_skus": int(df_in_filtered['sku_code'].nunique()) if not df_in_filtered.empty else 0,
+                "unique_containers": int(df_in_filtered['in_cntr'].nunique()) if not df_in_filtered.empty else 0,
+                "top_skus": df_in_filtered.groupby('sku_code')['in_qty'].sum().nlargest(top_limit).to_dict() if not df_in_filtered.empty else {},
+                "sample_data": sample_data
+            }
+            print(f"[Pipeline] Inbound 필터링: {len(df_in_filtered)}건")
+
+        # --- Inventory 데이터 처리 ---
+        if self.wms_data["inventory"] is not None:
+            df_inv = self.wms_data["inventory"]
+            # Inventory는 크기가 작으므로 샘플 5개로 제한
+            result["inventory"] = {
+                "total_skus": len(df_inv),
+                "columns": df_inv.columns.tolist(),
+                "sample_data": df_inv.head(5).to_dict('records')
+            }
+            print(f"[Pipeline] Inventory: {len(df_inv)}개 SKU")
+
+        # --- Outbound 데이터 처리 ---
+        if self.wms_data["outbound"] is not None:
+            df_out = self.wms_data["outbound"]
+            if start_date is not None:
+                df_out_filtered = df_out[(df_out['date'] >= start_date) & (df_out['date'] <= end_date)]
+            else:
+                df_out_filtered = df_out.tail(5000)
+
+            # 데이터가 많을 경우 샘플 제한
+            sample_limit_out = 3 if len(df_out_filtered) > 10000 else 5
+
+            # 샘플 데이터 준비 (날짜를 문자열로 변환)
+            sample_data_out = []
+            if not df_out_filtered.empty:
+                df_sample_out = df_out_filtered.head(sample_limit_out).copy()
+                df_sample_out['date'] = df_sample_out['date'].dt.strftime('%Y-%m-%d')
+                sample_data_out = df_sample_out.to_dict('records')
+
+            # 출고 수량 계산 (box_qty 또는 ea_qty 사용)
+            total_box_qty = 0
+            total_ea_qty = 0
+            top_skus = {}
+
+            # Top SKU도 제한 (데이터 많을 경우 5개로 축소)
+            top_limit_out = 5 if len(df_out_filtered) > 10000 else 10
+
+            if not df_out_filtered.empty:
+                if 'box_qty' in df_out_filtered.columns:
+                    total_box_qty = int(df_out_filtered['box_qty'].sum())
+                if 'ea_qty' in df_out_filtered.columns:
+                    total_ea_qty = int(df_out_filtered['ea_qty'].sum())
+
+                # SKU별 출고 수량 (box_qty 기준)
+                if 'sku_code' in df_out_filtered.columns and 'box_qty' in df_out_filtered.columns:
+                    top_skus = df_out_filtered.groupby('sku_code')['box_qty'].sum().nlargest(top_limit_out).to_dict()
+
+            result["outbound"] = {
+                "total_records": len(df_out_filtered),
+                "total_box_qty": total_box_qty,
+                "total_ea_qty": total_ea_qty,
+                "unique_skus": int(df_out_filtered['sku_code'].nunique()) if not df_out_filtered.empty and 'sku_code' in df_out_filtered.columns else 0,
+                "unique_channels": int(df_out_filtered['channel'].nunique()) if not df_out_filtered.empty and 'channel' in df_out_filtered.columns else 0,
+                "top_skus": top_skus,
+                "sample_data": sample_data_out
+            }
+            print(f"[Pipeline] Outbound 필터링: {len(df_out_filtered)}건")
+
+        # 데이터 요약 노트 추가
+        total_records = result["inbound"].get("total_records", 0) + result["outbound"].get("total_records", 0)
+        if total_records > 20000:
+            result["data_summary_note"] = f"데이터가 많아 ({total_records:,}건) 통계 요약과 상위 항목만 제공합니다. 샘플 데이터는 축소되었습니다."
 
         return json.dumps(result, ensure_ascii=False, indent=2)
 
-    def _detect_anomalies(self, data: List[dict]) -> List[dict]:
-        anomalies = []
-        for order in data:
-            issues = []
-            if order["quantity"] < 0: issues.append("수량이 음수입니다")
-            if order["status"] == "delayed": issues.append("배송이 지연되었습니다")
-            if issues: anomalies.append({**order, "issues": issues})
-        return anomalies
 
     def _extract_date(self, query: str) -> Union[str, dict]:
         """
@@ -231,11 +281,68 @@ class Pipeline:
         if "일주일" in query or "7일" in query or "week" in query_lower:
             return "week"
 
-        # M월 전체 데이터 요청 (예: "6월", "6월달", "6월 데이터")
+        # 먼저 연도가 명시되어 있는지 확인
+        year_match = re.search(r'(\d{4})년', query)
+        default_year = int(year_match.group(1)) if year_match else 2024  # 기본 연도를 2024로 변경
+
+        # 날짜 범위 (부터~까지, ~) - M월 전체보다 먼저 체크해야 함!
+        # 패턴 1: "M월 D일부터 M월 D일까지" (다른 월 사이 - 먼저 체크)
+        match = re.search(r'(\d{1,2})월\s*(\d{1,2})일?\s*(?:부터|에서)\s*(?:~|-)?\s*(\d{1,2})월\s*(\d{1,2})일?(?:까지)?', query)
+        if match:
+            start_month, start_day, end_month, end_day = match.groups()
+            year = default_year
+            return {
+                "type": "range",
+                "start": f"{year}-{int(start_month):02d}-{int(start_day):02d}",
+                "end": f"{year}-{int(end_month):02d}-{int(end_day):02d}",
+                "description": f"{start_month}월 {start_day}일부터 {end_month}월 {end_day}일까지"
+            }
+
+        # 패턴 2: "M월 D일~D일" (같은 월 내)
+        match = re.search(r'(\d{1,2})월\s*(\d{1,2})일?\s*(?:~|-)\s*(\d{1,2})일?(?:까지)?', query)
+        if match:
+            start_month = int(match.group(1))
+            start_day = int(match.group(2))
+            end_day = int(match.group(3))
+            year = default_year
+            return {
+                "type": "range",
+                "start": f"{year}-{start_month:02d}-{start_day:02d}",
+                "end": f"{year}-{start_month:02d}-{end_day:02d}",
+                "description": f"{start_month}월 {start_day}일부터 {end_day}일까지"
+            }
+
+        # 패턴 3: "M월 D일부터 D일까지" (같은 월, 부터~까지 명시)
+        match = re.search(r'(\d{1,2})월\s*(\d{1,2})일?\s*부터\s*(\d{1,2})일?(?:까지)?', query)
+        if match:
+            start_month = int(match.group(1))
+            start_day = int(match.group(2))
+            end_day = int(match.group(3))
+            year = default_year
+            return {
+                "type": "range",
+                "start": f"{year}-{start_month:02d}-{start_day:02d}",
+                "end": f"{year}-{start_month:02d}-{end_day:02d}",
+                "description": f"{start_month}월 {start_day}일부터 {end_day}일까지"
+            }
+
+        # 패턴 4: "M/D ~ M/D"
+        match = re.search(r'(\d{1,2})/(\d{1,2})\s*(?:~|-)\s*(\d{1,2})/(\d{1,2})', query)
+        if match:
+            start_month, start_day, end_month, end_day = match.groups()
+            year = default_year
+            return {
+                "type": "range",
+                "start": f"{year}-{int(start_month):02d}-{int(start_day):02d}",
+                "end": f"{year}-{int(end_month):02d}-{int(end_day):02d}",
+                "description": f"{start_month}/{start_day} ~ {end_month}/{end_day}"
+            }
+
+        # M월 전체 데이터 요청 (예: "6월", "6월달", "6월 데이터") - 범위 체크 후 마지막에!
         match = re.search(r'(\d{1,2})월(?:달|간|\s+데이터|\s+중)?', query)
         if match:
             month = int(match.group(1))
-            year = 2025  # 기본 연도
+            year = default_year
             # 해당 월의 첫날과 마지막 날 계산
             from calendar import monthrange
             last_day = monthrange(year, month)[1]
@@ -244,31 +351,6 @@ class Pipeline:
                 "start": f"{year}-{month:02d}-01",
                 "end": f"{year}-{month:02d}-{last_day:02d}",
                 "description": f"{year}년 {month}월 전체"
-            }
-
-        # 날짜 범위 (부터~까지, ~)
-        # 패턴 1: "M월 D일부터 M월 D일까지"
-        match = re.search(r'(\d{1,2})월\s*(\d{1,2})일?(?:부터|에서)?\s*(?:~|-)?\s*(\d{1,2})월\s*(\d{1,2})일?(?:까지)?', query)
-        if match:
-            start_month, start_day, end_month, end_day = match.groups()
-            year = 2025
-            return {
-                "type": "range",
-                "start": f"{year}-{int(start_month):02d}-{int(start_day):02d}",
-                "end": f"{year}-{int(end_month):02d}-{int(end_day):02d}",
-                "description": f"{start_month}월 {start_day}일부터 {end_month}월 {end_day}일까지"
-            }
-
-        # 패턴 2: "M/D ~ M/D"
-        match = re.search(r'(\d{1,2})/(\d{1,2})\s*(?:~|-)\s*(\d{1,2})/(\d{1,2})', query)
-        if match:
-            start_month, start_day, end_month, end_day = match.groups()
-            year = 2025
-            return {
-                "type": "range",
-                "start": f"{year}-{int(start_month):02d}-{int(start_day):02d}",
-                "end": f"{year}-{int(end_month):02d}-{int(end_day):02d}",
-                "description": f"{start_month}/{start_day} ~ {end_month}/{end_day}"
             }
 
         # YYYY-MM-DD 형식
@@ -281,14 +363,14 @@ class Pipeline:
         match = re.search(r'(\d{1,2})/(\d{1,2})', query)
         if match:
             month, day = match.groups()
-            year = 2025  # 기본 연도
+            year = default_year
             return f"{year}-{int(month):02d}-{int(day):02d}"
 
-        # M월 D일 형식 (예: 6월 1일)
+        # M월 D일 형식 (예: 6월 1일) - 단일 날짜
         match = re.search(r'(\d{1,2})월\s*(\d{1,2})일?', query)
         if match:
             month, day = match.groups()
-            year = 2025  # 기본 연도
+            year = default_year
             return f"{year}-{int(month):02d}-{int(day):02d}"
 
         return "today"
@@ -307,10 +389,20 @@ class Pipeline:
         return f"""
 당신은 물류 데이터 분석 전문가입니다.
 사용자 질문: {user_message}
-WMS 데이터:
+
+WMS 데이터 (Inbound, Inventory, Outbound):
 {wms_data}
+
 위 데이터를 바탕으로 사용자의 질문에 구체적이고 명확하게 답변하세요.
-이상이 있다면 각 이상 사항(anomalies)을 자세히 설명하고, 없다면 정상이라고 알려주세요.
+- Inbound: 입고 데이터 (입고 수량, SKU, 컨테이너 정보 등)
+- Inventory: 재고 현황 데이터 (월별 SKU 재고)
+- Outbound: 출고 데이터 (출고 수량, SKU 정보 등)
+
+데이터 분석 시 다음을 포함하세요:
+1. 주요 통계 요약
+2. 상위 SKU 분석
+3. 이상 패턴이나 특이사항 (있는 경우)
+4. 추세 및 인사이트
 """
 
     # --- 7. _call_ollama (valves를 인자로 받음) ---
