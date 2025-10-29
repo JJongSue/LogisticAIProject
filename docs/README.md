@@ -157,7 +157,7 @@ ML/
 
 ```python
 # Python 인터프리터에서
-from demand_forecast_system import DemandForecastSystem
+from jsp.demand_forecast_system import DemandForecastSystem
 
 # 시스템 초기화
 dfs = DemandForecastSystem(output_dir='outputs')

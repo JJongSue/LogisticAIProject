@@ -81,8 +81,9 @@ Step 2: 데이터 로딩
 ## 단계별 실행 가이드
 
 ### Step 1: 시스템 초기화
+
 ```python
-from demand_forecast_system import DemandForecastSystem
+from jsp.demand_forecast_system import DemandForecastSystem
 
 dfs = DemandForecastSystem(output_dir='outputs')
 ```

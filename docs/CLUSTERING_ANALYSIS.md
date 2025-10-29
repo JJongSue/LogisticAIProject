@@ -517,8 +517,9 @@ clusters = kmeans.fit_predict(encoded_features)
 ## 부록: 코드 예제
 
 ### 전체 실행 예제
+
 ```python
-from demand_forecast_system import DemandForecastSystem
+from jsp.demand_forecast_system import DemandForecastSystem
 
 # 시스템 초기화
 dfs = DemandForecastSystem(output_dir='outputs')
